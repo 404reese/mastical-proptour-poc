@@ -408,7 +408,7 @@ function SceneContent({
   // apply spin orbit
   useFrame(() => {
     if (isSpinning && cameraAnimationTarget) {
-      const look = cameraAnimationTarget.lookAt;
+      const look = new Vector3(10, 10, 10);
       const radius = cameraAnimationTarget.position.distanceTo(look);
       const a = spin.get();
       camera.position.set(
