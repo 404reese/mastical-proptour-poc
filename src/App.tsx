@@ -3,7 +3,7 @@ import { Canvas, useThree, useFrame } from '@react-three/fiber'
 import { PointerLockControls, OrbitControls } from '@react-three/drei'
 import { useEffect, useRef, useState, useCallback } from 'react' // useMemo removed, useCallback added
 import { Vector3 } from 'three'
-import { useSpring, animated, config as springConfig, useChain, useSpringRef } from '@react-spring/three' // Added useChain and useSpringRef
+import { useSpring, animated, config as springConfig } from '@react-spring/three' // Added react-spring imports
 import { PropertyModel } from './components/PropertyModel'
 import { Hotspot } from './components/Hotspot'
 
@@ -54,19 +54,14 @@ const viewCameraStates = {
 
 type ViewKey = keyof typeof viewCameraStates;
 
-// Define waypoints for the guided tour
-const tourWaypoints: ViewKey[] = ['hall', 'bedroom', 'kitchen'];
-const WAYPOINT_TRANSITION_TIME = 3000; // 3 seconds
-const WAYPOINT_PAUSE_TIME = 1000; // 1 second
 
 // Navigation Bar Component
 interface NavigationBarProps {
   onNavigate: (view: ViewKey) => void;
   onStartTour: () => void;
-  isTourActive: boolean;
 }
 
-function NavigationBar({ onNavigate, onStartTour, isTourActive }: NavigationBarProps) {
+function NavigationBar({ onNavigate, onStartTour }: NavigationBarProps) {
   const navStyle: React.CSSProperties = {
     position: 'absolute',
     top: '20px',
@@ -96,14 +91,13 @@ function NavigationBar({ onNavigate, onStartTour, isTourActive }: NavigationBarP
     hall: {...buttonStyleInitial},
     bedroom: {...buttonStyleInitial},
     kitchen: {...buttonStyleInitial},
-    tour: {...buttonStyleInitial, background: 'rgba(40, 167, 69, 0.7)'},
   });
 
   const handleMouseEnter = (key: keyof typeof buttonStyles) => {
-    setButtonStyles(prev => ({...prev, [key]: {...prev[key], backgroundColor: key === 'tour' ? 'rgba(40, 167, 69, 0.9)' : 'rgba(255, 255, 255, 0.2)'}}));
+    setButtonStyles(prev => ({...prev, [key]: {...prev[key], backgroundColor: 'rgba(255, 255, 255, 0.2)'}}));
   };
   const handleMouseLeave = (key: keyof typeof buttonStyles) => {
-    setButtonStyles(prev => ({...prev, [key]: {...prev[key], backgroundColor: key === 'tour' ? 'rgba(40, 167, 69, 0.7)' : 'transparent'}}));
+     setButtonStyles(prev => ({...prev, [key]: {...prev[key], backgroundColor: 'transparent'}}));
   };
 
   return (
@@ -112,18 +106,11 @@ function NavigationBar({ onNavigate, onStartTour, isTourActive }: NavigationBarP
       <button style={buttonStyles.hall} onMouseEnter={() => handleMouseEnter('hall')} onMouseLeave={() => handleMouseLeave('hall')} onClick={() => onNavigate('hall')}>Hall</button>
       <button style={buttonStyles.bedroom} onMouseEnter={() => handleMouseEnter('bedroom')} onMouseLeave={() => handleMouseLeave('bedroom')} onClick={() => onNavigate('bedroom')}>Bedroom</button>
       <button style={buttonStyles.kitchen} onMouseEnter={() => handleMouseEnter('kitchen')} onMouseLeave={() => handleMouseLeave('kitchen')} onClick={() => onNavigate('kitchen')}>Kitchen</button>
-      <button 
-        style={{
-          ...buttonStyles.tour,
-          opacity: isTourActive ? 0.6 : 1,
-          cursor: isTourActive ? 'default' : 'pointer'
-        }} 
-        onMouseEnter={() => !isTourActive && handleMouseEnter('tour')} 
-        onMouseLeave={() => !isTourActive && handleMouseLeave('tour')} 
-        onClick={() => !isTourActive && onStartTour()}
-        disabled={isTourActive}
+      <button
+        style={buttonStyleInitial}
+        onClick={onStartTour}
       >
-        {isTourActive ? 'Tour Active...' : 'Start Tour'}
+        Start Tour
       </button>
     </div>
   );
@@ -324,140 +311,69 @@ function CameraAnimator({ targetState, onAnimationComplete, isTransitioning }: C
   return null;
 }
 
-// GuidedTour Component
-interface GuidedTourProps {
-  waypoints: ViewKey[];
-  isActive: boolean;
-  onNavigate: (view: ViewKey) => void;
-  onTourComplete: () => void;
-}
-
-function GuidedTour({ waypoints, isActive, onNavigate, onTourComplete }: GuidedTourProps) {
-  const [currentWaypointIndex, setCurrentWaypointIndex] = useState(0);
-  const [isRotating, setIsRotating] = useState(false);
-  const [rotationAngle, setRotationAngle] = useState(0);
-  const [rotationCenter, setRotationCenter] = useState<Vector3 | null>(null);
-  const timeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const { camera } = useThree();
-  
-  // Constants for rotation control
-  const ROTATION_DURATION = 10000; // 10 seconds for full 360 rotation
-  const ROTATION_RADIUS = 2.5; // Distance from center point during rotation
-  
-  useEffect(() => {
-    if (!isActive) {
-      // Clear any pending timeouts when tour is stopped
-      if (timeoutRef.current) clearTimeout(timeoutRef.current);
-      setIsRotating(false);
-      return;
-    }
-
-    if (currentWaypointIndex < waypoints.length) {
-      const currentWaypoint = waypoints[currentWaypointIndex];
-      const roomCenter = baseRoomCoordinates[currentWaypoint].clone();
-      
-      // First navigate to the waypoint
-      if (!isRotating) {
-        onNavigate(currentWaypoint);
-        
-        // Start rotation after camera has reached the waypoint
-        timeoutRef.current = setTimeout(() => {
-          setIsRotating(true);
-          setRotationAngle(0);
-          setRotationCenter(roomCenter);
-        }, WAYPOINT_TRANSITION_TIME + 500);
-      }
-    }
-
-    return () => {
-      if (timeoutRef.current) clearTimeout(timeoutRef.current);
-    };
-  }, [isActive, currentWaypointIndex, isRotating, onNavigate, waypoints]);
-
-  // Reset index when tour is restarted
-  useEffect(() => {
-    if (isActive) {
-      setCurrentWaypointIndex(0);
-      setIsRotating(false);
-    }
-  }, [isActive]);
-
-  // Handle the rotation animation
-  useFrame(({ clock }) => {
-    if (isActive && isRotating && rotationCenter) {
-      // Calculate rotation progress (0 to 1)
-      const elapsedTime = (clock.getElapsedTime() * 1000) % ROTATION_DURATION;
-      const progress = elapsedTime / ROTATION_DURATION;
-      const angle = progress * Math.PI * 2; // 0 to 2π (full circle)
-      
-      // Calculate new camera position in a circle
-      const newX = rotationCenter.x + Math.cos(angle) * ROTATION_RADIUS;
-      const newZ = rotationCenter.z + Math.sin(angle) * ROTATION_RADIUS;
-      
-      // Update camera and make it look at the center
-      camera.position.set(newX, PLAYER_HEIGHT, newZ);
-      camera.lookAt(rotationCenter.x, PLAYER_HEIGHT, rotationCenter.z);
-      camera.updateProjectionMatrix();
-      
-      // When rotation completes one full circle
-      if (Math.abs(angle - rotationAngle) > 0.1 && angle < rotationAngle) {
-        setIsRotating(false);
-        
-        // Move to next waypoint or end tour
-        timeoutRef.current = setTimeout(() => {
-          if (currentWaypointIndex < waypoints.length - 1) {
-            setCurrentWaypointIndex(currentWaypointIndex + 1);
-          } else {
-            onTourComplete();
-          }
-        }, 1000); // Pause briefly before moving to next waypoint
-      }
-      
-      setRotationAngle(angle);
-    }
-  });
-
-  return null; // This component has no visual representation
-}
 
 // SceneContent component
-function SceneContent({ currentViewKey, navigateTo }: { currentViewKey: ViewKey, navigateTo: (view: ViewKey) => void }) {
+function SceneContent({
+  currentViewKey,
+  navigateTo,
+  tourStarted
+}: {
+  currentViewKey: ViewKey;
+  navigateTo: (view: ViewKey) => void;
+  tourStarted: boolean;
+}) {
   const { camera, gl } = useThree();
-  
+
   const [playerInitialPos, setPlayerInitialPos] = useState<Vector3>(viewCameraStates.default.position.clone());
   const [activeControls, setActiveControls] = useState<'fps' | 'orbit' | 'none'>('fps'); // 'fps', 'orbit', 'none'
   const [isTransitioning, setIsTransitioning] = useState(false);
   const [cameraAnimationTarget, setCameraAnimationTarget] = useState<typeof viewCameraStates[ViewKey] | null>(null);
-  const [tourRotationActive, setTourRotationActive] = useState(false);
+
+  // guided tour state
+  const waypoints = ['hall', 'bedroom', 'kitchen'] as const;
+  const [tourIdx, setTourIdx] = useState(0);
+  const [tourActive, setTourActive] = useState(false);
+  const [isSpinning, setIsSpinning] = useState(false);
+  const [nextIdx, setNextIdx] = useState(0);
+
+  // kick off tour when button clicked
+  useEffect(() => {
+    if (tourStarted) {
+      setTourActive(true);
+      setTourIdx(0);
+      navigateTo(waypoints[0]);
+    }
+  }, [tourStarted]);
 
   useEffect(() => {
-    if (tourRotationActive) {
-      setActiveControls('none');
-      return;
-    }
-    
     // Start transition
     setIsTransitioning(true);
-    setActiveControls('none'); // Disable all controls during transition
-    
+    setActiveControls('none');
     const targetState = viewCameraStates[currentViewKey] || viewCameraStates.default;
     setCameraAnimationTarget(targetState);
-
     if (currentViewKey !== 'topView') {
       setPlayerInitialPos(targetState.position.clone());
     }
-  }, [currentViewKey, tourRotationActive]);
+  }, [currentViewKey]);
 
   const handleAnimationEnd = useCallback(() => {
-    setIsTransitioning(false);
-    setCameraAnimationTarget(null); // Clear animation target
-
-    // Don't enable controls if tour rotation is active
-    if (tourRotationActive) {
-      setActiveControls('none');
+    // trigger spin after arriving at waypoint
+    if (tourActive && !isSpinning) {
+      if (tourIdx < waypoints.length - 1) {
+        const nxt = tourIdx + 1;
+        setNextIdx(nxt);
+        setIsSpinning(true);
+        setIsTransitioning(false);
+        return;
+      }
+      // tour finished → enable FPS
+      setTourActive(false);
+      setActiveControls('fps');
       return;
     }
 
+    setIsTransitioning(false);
+    setCameraAnimationTarget(null);
     const newControls = currentViewKey === 'topView' ? 'orbit' : 'fps';
     setActiveControls(newControls);
 
@@ -468,21 +384,41 @@ function SceneContent({ currentViewKey, navigateTo }: { currentViewKey: ViewKey,
     if (newControls === 'orbit' && document.pointerLockElement === gl.domElement) {
         document.exitPointerLock(); // Ensure pointer is unlocked for orbit controls
     }
-  }, [currentViewKey, gl.domElement, tourRotationActive]);
+  }, [currentViewKey, gl.domElement, tourActive, tourIdx, isSpinning]);
 
-  // Expose the tour rotation state to the parent (App)
-  useEffect(() => {
-    // This is a way to detect if a tour is active and rotating
-    const checkForTourRotation = () => {
-      // Simple check - we could enhance this with a proper state management system
-      const isTourElement = document.getElementById('tour-rotating');
-      return !!isTourElement;
-    };
-    
-    // For demonstration - in reality, you'd use a proper state management approach
-    const rotationActive = checkForTourRotation();
-    setTourRotationActive(rotationActive);
-  }, [currentViewKey]);
+
+  // spin spring for 360° around current lookAt
+  const { spin } = useSpring({
+    from: { spin: 0 },
+    to: { spin: Math.PI * 2 },
+    config: { duration: 5000 },
+    pause: !isSpinning,
+    reset: true,
+    onRest: () => {
+      if (isSpinning) {
+        setTimeout(() => {
+          setTourIdx(nextIdx);
+          navigateTo(waypoints[nextIdx]);
+          setIsSpinning(false);
+        }, 2000);
+      }
+    },
+  });
+
+  // apply spin orbit
+  useFrame(() => {
+    if (isSpinning && cameraAnimationTarget) {
+      const look = cameraAnimationTarget.lookAt;
+      const radius = cameraAnimationTarget.position.distanceTo(look);
+      const a = spin.get();
+      camera.position.set(
+        look.x + radius * Math.cos(a),
+        look.y,
+        look.z + radius * Math.sin(a)
+      );
+      camera.lookAt(look.x, look.y, look.z);
+    }
+  });
 
   return (
     <>
@@ -510,15 +446,16 @@ function SceneContent({ currentViewKey, navigateTo }: { currentViewKey: ViewKey,
         isTransitioning={isTransitioning}
       />
 
-      {activeControls === 'fps' && !isTransitioning && !tourRotationActive && (
+      {/* only show controls after tour */}
+      {!tourActive && activeControls === 'fps' && (
         <PlayerControls initialPosition={playerInitialPos} enabled={true} />
       )}
-      {activeControls === 'orbit' && !isTransitioning && currentViewKey === 'topView' && !tourRotationActive && (
+      {!tourActive && activeControls === 'orbit' && currentViewKey === 'topView' && (
         <OrbitControls 
-            args={[camera, gl.domElement]} 
-            enableZoom={true} 
-            enablePan={true} 
-            target={viewCameraStates.topView.lookAt}
+          args={[camera, gl.domElement]} 
+          enableZoom={true} 
+          enablePan={true} 
+          target={viewCameraStates.topView.lookAt}
         />
       )}
     </>
@@ -527,47 +464,31 @@ function SceneContent({ currentViewKey, navigateTo }: { currentViewKey: ViewKey,
 
 export default function App() {
   const [currentViewKey, setCurrentViewKey] = useState<ViewKey>('default');
-  const [isTourActive, setIsTourActive] = useState(false);
-  
+  const [tourStarted, setTourStarted] = useState(false);
+
   const handleNavigate = (viewTargetKey: ViewKey) => {
-    // Cancel tour if manual navigation is used
-    if (isTourActive) setIsTourActive(false);
     setCurrentViewKey(viewTargetKey);
   };
-
-  const handleStartTour = () => {
-    setIsTourActive(true);
-  };
-
-  const handleTourComplete = () => {
-    setIsTourActive(false);
-    // Optionally switch to FPS controls by navigating to the last waypoint
-    // already handled by the tour navigation
-  };
+  const handleStartTour = () => setTourStarted(true);
 
   // Set initial view once on mount
   useEffect(() => {
     handleNavigate('default'); 
   }, []);
 
+
   return (
     <> 
-      <NavigationBar 
-        onNavigate={handleNavigate} 
+      <NavigationBar
+        onNavigate={handleNavigate}
         onStartTour={handleStartTour}
-        isTourActive={isTourActive}
       />
-      {isTourActive && (
-        <GuidedTour 
-          waypoints={tourWaypoints}
-          isActive={isTourActive}
-          onNavigate={setCurrentViewKey}
-          onTourComplete={handleTourComplete}
-        />
-      )}
       <Canvas
+        // Initial camera setup is less critical as CameraAnimator and controls will manage it.
+        // However, providing a sensible default is good.
         camera={{ fov: 50, near: 0.1, far: 1000, position: viewCameraStates.default.position.toArray() }}
         style={{ width: '100vw', height: '100vh', background: '#d9d9d9' }}
+        // onPointerMissed={(event) => event.stopPropagation()} // May help with controls if needed
       >
         <ambientLight intensity={0.9} /> 
         <directionalLight 
@@ -576,7 +497,11 @@ export default function App() {
         />
         <hemisphereLight skyColor={0xffffff} groundColor={0x444444} intensity={0.6} />
 
-        <SceneContent currentViewKey={currentViewKey} navigateTo={handleNavigate} /> 
+        <SceneContent
+          currentViewKey={currentViewKey}
+          navigateTo={handleNavigate}
+          tourStarted={tourStarted}
+        /> 
         
       </Canvas>
     </>
