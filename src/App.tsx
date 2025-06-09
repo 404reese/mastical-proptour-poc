@@ -1,14 +1,16 @@
 // src/App.tsx
 import { Canvas, useThree, useFrame } from '@react-three/fiber'
 import { PointerLockControls, OrbitControls } from '@react-three/drei'
-import { useEffect, useRef, useState, useCallback } from 'react' // useMemo removed, useCallback added
+import { useEffect, useRef, useState, useCallback } from 'react' 
+import * as THREE from 'three'; // Import THREE
 import { Vector3 } from 'three'
-import { useSpring, animated, config as springConfig } from '@react-spring/three' // Added react-spring imports
+import { useSpring, animated, config as springConfig } from '@react-spring/three' 
 import { PropertyModel } from './components/PropertyModel'
 import { Hotspot } from './components/Hotspot'
 
 const MOVE_SPEED = 5 // units per second
 const PLAYER_HEIGHT = 1.6
+const COLLISION_THRESHOLD = 0.6; // Player's approximate radius + buffer for collision
 
 // Define room coordinates (base for camera states)
 const baseRoomCoordinates = {
@@ -49,6 +51,12 @@ const viewCameraStates = {
     position: baseRoomCoordinates.default.clone(),
     lookAt: new Vector3(baseRoomCoordinates.default.x, PLAYER_HEIGHT, baseRoomCoordinates.default.z - 5),
     fov: 50,
+  },
+  walkMode: { // New state for Walk Mode
+    id: 'walkMode',
+    position: baseRoomCoordinates.default.clone(), // Start at default position
+    lookAt: new Vector3(baseRoomCoordinates.default.x, PLAYER_HEIGHT, baseRoomCoordinates.default.z - 5), // Look "forward"
+    fov: 60, // Wider FOV for walking
   }
 };
 
@@ -91,6 +99,7 @@ function NavigationBar({ onNavigate, onStartTour }: NavigationBarProps) {
     hall: {...buttonStyleInitial},
     bedroom: {...buttonStyleInitial},
     kitchen: {...buttonStyleInitial},
+    walkMode: {...buttonStyleInitial}, // Style for Walk Mode button
   });
 
   const handleMouseEnter = (key: keyof typeof buttonStyles) => {
@@ -106,6 +115,7 @@ function NavigationBar({ onNavigate, onStartTour }: NavigationBarProps) {
       <button style={buttonStyles.hall} onMouseEnter={() => handleMouseEnter('hall')} onMouseLeave={() => handleMouseLeave('hall')} onClick={() => onNavigate('hall')}>Hall</button>
       <button style={buttonStyles.bedroom} onMouseEnter={() => handleMouseEnter('bedroom')} onMouseLeave={() => handleMouseLeave('bedroom')} onClick={() => onNavigate('bedroom')}>Bedroom</button>
       <button style={buttonStyles.kitchen} onMouseEnter={() => handleMouseEnter('kitchen')} onMouseLeave={() => handleMouseLeave('kitchen')} onClick={() => onNavigate('kitchen')}>Kitchen</button>
+      <button style={buttonStyles.walkMode} onMouseEnter={() => handleMouseEnter('walkMode')} onMouseLeave={() => handleMouseLeave('walkMode')} onClick={() => onNavigate('walkMode')}>Walk Mode</button> {/* Walk Mode Button */}
       <button
         style={buttonStyleInitial}
         onClick={onStartTour}
@@ -118,7 +128,17 @@ function NavigationBar({ onNavigate, onStartTour }: NavigationBarProps) {
 
 
 // PlayerControls component
-function PlayerControls({ initialPosition, enabled }: { initialPosition: Vector3, enabled: boolean }) {
+function PlayerControls({
+  initialPosition,
+  enabled,
+  model, // New prop: the 3D model for collision detection
+  isWalkMode // New prop: flag for walk mode specific behaviors
+}: {
+  initialPosition: Vector3,
+  enabled: boolean,
+  model: THREE.Object3D | null | undefined, // Model can be Group or Scene
+  isWalkMode: boolean 
+}) {
   const { camera, gl } = useThree()
   const movement = useRef({
     forward: false,
@@ -126,14 +146,15 @@ function PlayerControls({ initialPosition, enabled }: { initialPosition: Vector3
     left: false,
     right: false
   })
-  const velocity = useRef(new Vector3())
+  const velocity = useRef(new Vector3()) // Used for internal calculations, not directly for final movement
   const direction = useRef(new Vector3())
+  const mouseIsDown = useRef(false); // For mouse click movement
+  const raycaster = useRef(new THREE.Raycaster()).current; // Reusable Raycaster
 
   useEffect(() => {
     if (enabled) {
-      // Position is set by animation; this ensures camera is at the correct spot if re-enabled.
-      // LookAt is managed by PointerLockControls.
       camera.position.copy(initialPosition);
+      camera.position.y = PLAYER_HEIGHT; // Ensure correct height
     }
   }, [camera, initialPosition, enabled]);
 
@@ -142,12 +163,12 @@ function PlayerControls({ initialPosition, enabled }: { initialPosition: Vector3
         if (document.pointerLockElement === gl.domElement) {
             document.exitPointerLock();
         }
-        // Clear movement flags when disabled
         movement.current.forward = false;
         movement.current.backward = false;
         movement.current.left = false;
         movement.current.right = false;
         velocity.current.set(0,0,0);
+        mouseIsDown.current = false; // Reset mouse state
         return;
     }
 
@@ -196,54 +217,134 @@ function PlayerControls({ initialPosition, enabled }: { initialPosition: Vector3
     document.addEventListener('keydown', handleKeyDown)
     document.addEventListener('keyup', handleKeyUp)
 
-    // Attempt to lock pointer when controls are enabled and canvas is focused
-    // This might require a user interaction like a click on the canvas first
-    // gl.domElement.requestPointerLock(); // This can be aggressive, usually lock on click
+    const handleMouseDown = (event: MouseEvent) => {
+      if (isWalkMode && event.button === 0) { // Left click in walk mode
+        if (document.pointerLockElement !== gl.domElement) {
+          gl.domElement.requestPointerLock(); // Lock pointer if not already locked
+        }
+        mouseIsDown.current = true;
+      }
+    };
+    const handleMouseUp = (event: MouseEvent) => {
+      if (isWalkMode && event.button === 0) {
+        mouseIsDown.current = false;
+      }
+    };
 
+    if (isWalkMode) {
+      gl.domElement.addEventListener('mousedown', handleMouseDown);
+      gl.domElement.addEventListener('mouseup', handleMouseUp);
+    }
+    
     return () => {
       document.removeEventListener('keydown', handleKeyDown)
       document.removeEventListener('keyup', handleKeyUp)
+      if (isWalkMode) {
+        gl.domElement.removeEventListener('mousedown', handleMouseDown);
+        gl.domElement.removeEventListener('mouseup', handleMouseUp);
+      }
       if (document.pointerLockElement === gl.domElement) {
         document.exitPointerLock();
       }
+      mouseIsDown.current = false; // Ensure cleanup
     }
-  }, [enabled, gl.domElement]) 
+  }, [enabled, gl.domElement, isWalkMode, camera]) // Added camera to deps for PointerLockControls args
 
   useFrame((_state, delta) => {
-    if (!enabled || document.pointerLockElement !== gl.domElement) { 
-      velocity.current.set(0,0,0);
+    if (!enabled) {
       return;
     }
+    // In walk mode, allow movement controls even if pointer isn't locked (for mouse click/touch)
+    // PointerLockControls will only activate mouse look when pointer is locked.
+    if (!isWalkMode && document.pointerLockElement !== gl.domElement) {
+      return; // For non-walk FPS modes, require pointer lock
+    }
+    if (!model) return; // No model to collide with
 
-    velocity.current.x = 0
-    velocity.current.z = 0
+    const speedDelta = MOVE_SPEED * delta;
+    
+    camera.getWorldDirection(direction.current); // This is the direction camera is looking
+    const forwardDir = direction.current.clone();
+    forwardDir.y = 0;
+    forwardDir.normalize();
 
-    camera.getWorldDirection(direction.current)
-    direction.current.y = 0 // Move on XZ plane
-    direction.current.normalize()
+    const rightDir = new Vector3();
+    rightDir.crossVectors(camera.up, forwardDir).normalize(); // camera.up is (0,1,0)
 
-    const speedDelta = MOVE_SPEED * delta
+    let moveDelta = new Vector3(0, 0, 0);
+    raycaster.far = COLLISION_THRESHOLD;
 
+    // Keyboard Forward
     if (movement.current.forward) {
-      velocity.current.add(direction.current.clone().multiplyScalar(speedDelta))
+      raycaster.set(camera.position, forwardDir);
+      const intersects = raycaster.intersectObject(model, true);
+      if (intersects.length === 0) {
+        moveDelta.add(forwardDir.clone().multiplyScalar(speedDelta));
+      }
     }
+    // Keyboard Backward
     if (movement.current.backward) {
-      velocity.current.add(direction.current.clone().multiplyScalar(-speedDelta))
+      const backwardDir = forwardDir.clone().negate();
+      raycaster.set(camera.position, backwardDir);
+      const intersects = raycaster.intersectObject(model, true);
+      if (intersects.length === 0) {
+        moveDelta.add(backwardDir.multiplyScalar(speedDelta));
+      }
     }
-
-    const rightVector = new Vector3()
-    rightVector.crossVectors(camera.up, direction.current).normalize()
-
+    // Keyboard Left
     if (movement.current.left) {
-      velocity.current.add(rightVector.clone().multiplyScalar(-speedDelta))
+      const leftDir = rightDir.clone().negate();
+      raycaster.set(camera.position, leftDir);
+      const intersects = raycaster.intersectObject(model, true);
+      if (intersects.length === 0) {
+        moveDelta.add(leftDir.multiplyScalar(speedDelta));
+      }
     }
+    // Keyboard Right
     if (movement.current.right) {
-      velocity.current.add(rightVector.clone().multiplyScalar(speedDelta))
+      raycaster.set(camera.position, rightDir);
+      const intersects = raycaster.intersectObject(model, true);
+      if (intersects.length === 0) {
+        moveDelta.add(rightDir.clone().multiplyScalar(speedDelta));
+      }
     }
 
-    camera.position.add(velocity.current)
-  })
+    // Mouse click to move forward (if in walk mode)
+    // This adds to existing keyboard movement if any, or moves on its own.
+    // The final normalization will handle combined speed.
+    if (isWalkMode && mouseIsDown.current) {
+      raycaster.set(camera.position, forwardDir); // Use camera's forward direction
+      const intersects = raycaster.intersectObject(model, true);
+      if (intersects.length === 0) {
+         // Check if forward movement is already maxed by keyboard to avoid double contribution if W is held
+        const tempForwardContribution = forwardDir.clone().multiplyScalar(speedDelta);
+        // A simple way to avoid over-contribution: if W is not pressed, or if W is pressed but blocked.
+        // This logic can be complex. For now, let's assume mouse adds its own attempt to move forward.
+        // The normalization step below will cap the total speed.
+        let canAddMouseMovement = true;
+        if(movement.current.forward){ // if W is pressed
+            raycaster.set(camera.position, forwardDir);
+            if(raycaster.intersectObject(model, true).length === 0){ // and W is not blocked
+                canAddMouseMovement = false; // W key is already providing max forward, don't add mouse
+            }
+        }
+        if(canAddMouseMovement){
+            moveDelta.add(forwardDir.clone().multiplyScalar(speedDelta));
+        }
+      }
+    }
+    
+    // Normalize combined movement vector to maintain consistent speed, then scale by speedDelta
+    if (moveDelta.lengthSq() > 0) {
+      moveDelta.normalize().multiplyScalar(speedDelta);
+    }
 
+    camera.position.add(moveDelta);
+    camera.position.y = PLAYER_HEIGHT; // Maintain player height
+  });
+
+  // PointerLockControls are active if enabled (for FPS views including walkMode)
+  // Mouse look is handled by PointerLockControls when pointer is locked.
   return enabled ? <PointerLockControls args={[camera, gl.domElement]} /> : null;
 }
 
@@ -323,9 +424,10 @@ function SceneContent({
   tourStarted: boolean;
 }) {
   const { camera, gl } = useThree();
+  const propertyModelRef = useRef<THREE.Group>(null); // Ref for the PropertyModel group
 
   const [playerInitialPos, setPlayerInitialPos] = useState<Vector3>(viewCameraStates.default.position.clone());
-  const [activeControls, setActiveControls] = useState<'fps' | 'orbit' | 'none'>('fps'); // 'fps', 'orbit', 'none'
+  const [activeControls, setActiveControls] = useState<'fps' | 'orbit' | 'none'>('fps'); 
   const [isTransitioning, setIsTransitioning] = useState(false);
   const [cameraAnimationTarget, setCameraAnimationTarget] = useState<typeof viewCameraStates[ViewKey] | null>(null);
 
@@ -348,10 +450,10 @@ function SceneContent({
   useEffect(() => {
     // Start transition
     setIsTransitioning(true);
-    setActiveControls('none');
+    setActiveControls('none'); // Disable controls during transition
     const targetState = viewCameraStates[currentViewKey] || viewCameraStates.default;
     setCameraAnimationTarget(targetState);
-    if (currentViewKey !== 'topView') {
+    if (currentViewKey !== 'topView') { // Includes 'walkMode'
       setPlayerInitialPos(targetState.position.clone());
     }
   }, [currentViewKey]);
@@ -374,12 +476,13 @@ function SceneContent({
 
     setIsTransitioning(false);
     setCameraAnimationTarget(null);
-    const newControls = currentViewKey === 'topView' ? 'orbit' : 'fps';
+    // Determine controls based on view: 'orbit' for topView, 'fps' for others (hall, bedroom, walkMode, etc.)
+    const newControls = (currentViewKey === 'topView') ? 'orbit' : 'fps';
     setActiveControls(newControls);
 
-    if (newControls === 'fps' && document.pointerLockElement === gl.domElement) {
-        // If pointer was locked, it might have been lost by disabling controls.
-        // Re-locking might need a click, PointerLockControls handles this.
+    if (newControls === 'fps' && document.pointerLockElement !== gl.domElement && (currentViewKey === 'walkMode' /* || other FPS views that might not auto-lock */)) {
+        // For walk mode, pointer lock is preferred but not strictly required for movement.
+        // User might need to click to lock for mouse look.
     }
     if (newControls === 'orbit' && document.pointerLockElement === gl.domElement) {
         document.exitPointerLock(); // Ensure pointer is unlocked for orbit controls
@@ -422,7 +525,7 @@ function SceneContent({
 
   return (
     <>
-      <PropertyModel />
+      <PropertyModel ref={propertyModelRef} /> {/* Assign ref to PropertyModel */}
 
       <Hotspot
         position={[4, 2, 4]} 
@@ -446,10 +549,16 @@ function SceneContent({
         isTransitioning={isTransitioning}
       />
 
-      {/* only show controls after tour */}
+      {/* PlayerControls for FPS views (including 'walkMode') */}
       {!tourActive && activeControls === 'fps' && (
-        <PlayerControls initialPosition={playerInitialPos} enabled={true} />
+        <PlayerControls
+          initialPosition={playerInitialPos}
+          enabled={true}
+          model={propertyModelRef.current} // Pass the model group for collision
+          isWalkMode={currentViewKey === 'walkMode'} // Set walk mode flag
+        />
       )}
+      {/* OrbitControls for topView */}
       {!tourActive && activeControls === 'orbit' && currentViewKey === 'topView' && (
         <OrbitControls 
           args={[camera, gl.domElement]} 
